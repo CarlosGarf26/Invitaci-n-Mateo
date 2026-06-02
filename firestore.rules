@@ -36,6 +36,18 @@ service cloud.firestore {
         && data.timestamp.size() <= 50;
     }
 
+    function isValidConfig(data) {
+      return data.keys().hasAll(['photo'])
+        && data.keys().size() == 1
+        && data.photo is string
+        && data.photo.size() <= 1500000;
+    }
+
+    match /config/{configId} {
+      allow read, get: if true;
+      allow write: if configId == 'captain' && isValidConfig(incoming());
+    }
+
     match /crew/{crewId} {
       // Anyone can read the flight roster to see the active status
       allow read, list: if true;

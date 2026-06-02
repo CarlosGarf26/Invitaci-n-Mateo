@@ -104,6 +104,11 @@ export default function App() {
     copilots: 0
   });
 
+  // Admin access and console options states
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [passcode, setPasscode] = useState('');
+
   // Notifications
   const [feedbackMsg, setFeedbackMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -162,12 +167,43 @@ export default function App() {
     }
   }, []);
 
-  // Load captain photo context and other local preferences
+  // Load captain config (Mateo's single photo) from Firestore in real-time
   useEffect(() => {
-    const savedPhoto = localStorage.getItem('mateo_captain_photo_v1');
-    if (savedPhoto) {
-      setCaptainPhoto(savedPhoto);
+    const pathForOnSnapshot = 'config/captain';
+    try {
+      const unsub = onSnapshot(doc(db, 'config', 'captain'), (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          if (data && data.photo) {
+            setCaptainPhoto(data.photo);
+          } else {
+            setCaptainPhoto('');
+          }
+        } else {
+          setCaptainPhoto('');
+        }
+      }, (error) => {
+        console.warn("Could not load captain photo from database. Using default illustration.", error);
+      });
+      return () => unsub();
+    } catch (error) {
+      console.error("error listening to captain config: ", error);
     }
+  }, []);
+
+  // Set up local admin status checker
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('admin') === 'true' || params.get('pwd') === 'mateo6') {
+      setIsAdmin(true);
+      localStorage.setItem('mateo_captain_admin_v1', 'confirmed');
+    } else {
+      const savedAdmin = localStorage.getItem('mateo_captain_admin_v1');
+      if (savedAdmin === 'confirmed') {
+        setIsAdmin(true);
+      }
+    }
+
     const savedOverlay = localStorage.getItem('mateo_helmet_overlay_v1');
     if (savedOverlay !== null) {
       setOverlayHelmet(savedOverlay === 'true');
@@ -235,17 +271,35 @@ export default function App() {
   };
 
   // Handle custom captain photo upload
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Basic compression or check size to ensure it complies with rules and speed (max ~1MB)
+      if (file.size > 1400000) {
+        setFeedbackMsg('⚠️ ERROR: Foto demasiado grande. Suba una menor a 1.2MB.');
+        if (isAudioEnabled) sfx.playBeep(250, 0.35, 'sawtooth');
+        setTimeout(() => setFeedbackMsg(''), 4000);
+        return;
+      }
+
+      setIsLoading(true);
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
           const base64String = event.target.result as string;
-          setCaptainPhoto(base64String);
-          localStorage.setItem('mateo_captain_photo_v1', base64String);
-          setFeedbackMsg('📸 ¡Foto del Capitán Mateo cargada con éxito!');
-          if (isAudioEnabled) sfx.playBeep(1200, 0.08);
+          const pathForWrite = 'config/captain';
+          try {
+            await setDoc(doc(db, 'config', 'captain'), {
+              photo: base64String
+            });
+            setCaptainPhoto(base64String);
+            setFeedbackMsg('📸 ¡Foto de Mateo guardada y sincronizada para todos!');
+            if (isAudioEnabled) sfx.playBeep(1200, 0.08);
+          } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, pathForWrite);
+          } finally {
+            setIsLoading(false);
+          }
           setTimeout(() => setFeedbackMsg(''), 3000);
         }
       };
@@ -253,11 +307,19 @@ export default function App() {
     }
   };
 
-  const resetCaptainPhoto = () => {
-    setCaptainPhoto('');
-    localStorage.removeItem('mateo_captain_photo_v1');
-    setFeedbackMsg('🎨 Avatar restaurado a caricatura vector.');
-    if (isAudioEnabled) sfx.playBeep(600, 0.08);
+  const resetCaptainPhoto = async () => {
+    setIsLoading(true);
+    const pathForDelete = 'config/captain';
+    try {
+      await deleteDoc(doc(db, 'config', 'captain'));
+      setCaptainPhoto('');
+      setFeedbackMsg('🎨 Avatar restaurado a caricatura de cabina.');
+      if (isAudioEnabled) sfx.playBeep(600, 0.08);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, pathForDelete);
+    } finally {
+      setIsLoading(false);
+    }
     setTimeout(() => setFeedbackMsg(''), 3000);
   };
 
@@ -268,6 +330,24 @@ export default function App() {
     setFeedbackMsg(nextVal ? '🪖 Equipaje del piloto: ¡Casco táctico activado!' : '👨🏻 Soltar casco táctico');
     if (isAudioEnabled) sfx.playBeep(990, 0.05);
     setTimeout(() => setFeedbackMsg(''), 2500);
+  };
+
+  const handleAdminVerify = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanPass = passcode.trim().toLowerCase();
+    if (cleanPass === 'mateo6' || cleanPass === 'mateo' || cleanPass === '1234') {
+      setIsAdmin(true);
+      setShowAdminLogin(false);
+      localStorage.setItem('mateo_captain_admin_v1', 'confirmed');
+      setFeedbackMsg('🔓 ¡Modo Administrador Autorizado!');
+      if (isAudioEnabled) sfx.playBeep(1000, 0.15);
+      setPasscode('');
+    } else {
+      setFeedbackMsg('❌ CLAVE INCORRECTA: ACCESO DE CABINA DENEGADO');
+      if (isAudioEnabled) sfx.playBeep(250, 0.35, 'sawtooth');
+      setPasscode('');
+    }
+    setTimeout(() => setFeedbackMsg(''), 3500);
   };
 
   // Launch pre-flight check countdown and full invitation
@@ -420,9 +500,24 @@ export default function App() {
     const currentObstacles = [...obstaclesRef.current];
     const speed = 0.8 + scoreRef.current * 0.05; // increases speed with score
 
-    const movedObstacles = currentObstacles
-      .map(obs => ({ ...obs, x: obs.x - speed }))
-      .filter(obs => obs.x > -20); // Keep those on screen
+    // Update positions
+    const updatedObstacles = currentObstacles.map(obs => ({ ...obs, x: obs.x - speed }));
+
+    // Count and award points for obstacles that successfully crossed off to the left
+    const onScreenObstacles = updatedObstacles.filter(obs => obs.x > -15);
+    const passedCount = updatedObstacles.length - onScreenObstacles.length;
+
+    if (passedCount > 0) {
+      scoreRef.current += passedCount;
+      setScore(scoreRef.current);
+      if (isAudioEnabled) sfx.playBeep(1200, 0.04);
+
+      if (scoreRef.current === 6 && !unlockedMedal) {
+        setUnlockedMedal(true);
+        setFeedbackMsg('🎖️ CUMPLIDO: ¡Alcanzaste 6 puntos! Cumpleaños 6 de Mateo desbloqueado!');
+        setTimeout(() => setFeedbackMsg(''), 4000);
+      }
+    }
 
     // 2. Spawn new obstacles
     const now = Date.now();
@@ -438,21 +533,8 @@ export default function App() {
         type: type as 'cloud' | 'bird'
       };
 
-      movedObstacles.push(newObs);
+      onScreenObstacles.push(newObs);
       lastObstacleSpawnRef.current = now;
-      
-      // Dodged an obstacle point trigger
-      if (currentObstacles.length > movedObstacles.length) {
-        scoreRef.current += 1;
-        setScore(scoreRef.current);
-        if (isAudioEnabled) sfx.playBeep(1200, 0.04);
-
-        if (scoreRef.current === 6 && !unlockedMedal) {
-          setUnlockedMedal(true);
-          setFeedbackMsg('🎖️ CUMPLIDO: ¡Alcanzaste 6 puntos! Cumpleaños 6 de Mateo desbloqueado!');
-          setTimeout(() => setFeedbackMsg(''), 4000);
-        }
-      }
     }
 
     // 3. Collision Detection
@@ -464,8 +546,8 @@ export default function App() {
     };
 
     let collision = false;
-    for (let i = 0; i < movedObstacles.length; i++) {
-      const o = movedObstacles[i];
+    for (let i = 0; i < onScreenObstacles.length; i++) {
+      const o = onScreenObstacles[i];
       // simplified percentage-based AABB overlap check
       const horizontalMatch = (playerBox.x + playerBox.width > o.x) && (playerBox.x < o.x + o.width);
       const verticalMatch = (playerBox.y + playerBox.height > o.y) && (playerBox.y < o.y + o.height);
@@ -476,8 +558,8 @@ export default function App() {
       }
     }
 
-    obstaclesRef.current = movedObstacles;
-    setObstacles(movedObstacles);
+    obstaclesRef.current = onScreenObstacles;
+    setObstacles(onScreenObstacles);
 
     if (collision) {
       setGameState('gameover');
@@ -900,44 +982,48 @@ export default function App() {
                     <span>Sonar motores</span>
                   </button>
 
-                  <button
-                    onClick={() => document.getElementById('captain-photo-input')?.click()}
-                    className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-400 border border-cyan-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
-                    title="Cargar foto real de Mateo"
-                  >
-                    <Camera className="w-3.5 h-3.5" />
-                    <span>{captainPhoto ? 'Cambiar Foto' : 'Cargar Foto de Mateo'}</span>
-                  </button>
-                  <input
-                    type="file"
-                    id="captain-photo-input"
-                    accept="image/*"
-                    onChange={handlePhotoUpload}
-                    className="hidden"
-                  />
-
-                  {captainPhoto && (
+                  {isAdmin && (
                     <>
                       <button
-                        onClick={toggleHelmet}
-                        className={`border rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer ${
-                          overlayHelmet 
-                            ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.15)]' 
-                            : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
-                        }`}
-                        title="Alternar casco y Google táctico"
+                        onClick={() => document.getElementById('captain-photo-input')?.click()}
+                        className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-400 border border-cyan-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                        title="Cargar foto real de Mateo"
                       >
-                        <span>{overlayHelmet ? 'Quitar Casco' : 'Poner Casco'}</span>
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>{captainPhoto ? 'Cambiar Foto' : 'Cargar Foto de Mateo'}</span>
                       </button>
+                      <input
+                        type="file"
+                        id="captain-photo-input"
+                        accept="image/*"
+                        onChange={handlePhotoUpload}
+                        className="hidden"
+                      />
 
-                      <button
-                        onClick={resetCaptainPhoto}
-                        className="bg-red-950/40 hover:bg-red-900/50 text-red-400 border border-red-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
-                        title="Volver a caricatura caricaturizada"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>Restablecer</span>
-                      </button>
+                      {captainPhoto && (
+                        <>
+                          <button
+                            onClick={toggleHelmet}
+                            className={`border rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer ${
+                              overlayHelmet 
+                                ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.15)]' 
+                                : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="Alternar casco y Google táctico"
+                          >
+                            <span>{overlayHelmet ? 'Quitar Casco' : 'Poner Casco'}</span>
+                          </button>
+
+                          <button
+                            onClick={resetCaptainPhoto}
+                            className="bg-red-950/40 hover:bg-red-900/50 text-red-400 border border-red-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                            title="Volver a caricatura caricaturizada"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Restablecer</span>
+                          </button>
+                        </>
+                      )}
                     </>
                   )}
                 </div>
@@ -1135,8 +1221,8 @@ export default function App() {
                   <div className="flex items-center space-x-3">
                     <Award className="w-5 h-5 text-yellow-500" />
                     <div>
-                      <h3 className="text-md font-bold font-mono text-white uppercase">MINI-JUEGO: ESQUIVAR TURBULENCIAS</h3>
-                      <p className="text-[10px] text-slate-400 font-mono">PILOTA TU SUPERSÓNICO F-18 HASTA LA ACCIÓN</p>
+                      <h3 className="text-md font-bold font-mono text-white uppercase">MINI-JUEGO: ESQUIVAR CAZAS ADV</h3>
+                      <p className="text-[10px] text-slate-400 font-mono">PILOTA TU SUPERSÓNICO F-18 CONTRA LA INVASIÓN</p>
                     </div>
                   </div>
 
@@ -1154,16 +1240,16 @@ export default function App() {
                     <div className="w-12 h-12 rounded-full bg-cyan-950/50 flex items-center justify-center border border-cyan-500/40">
                       <Plane className="w-6 h-6 text-cyan-400 animate-bounce" />
                     </div>
-                    <h4 className="text-sm font-bold font-mono text-white">MISIÓN: SOBREVIVE A LAS NUBES</h4>
+                    <h4 className="text-sm font-bold font-mono text-white">MISIÓN: COMBATE AÉREO</h4>
                     <p className="text-xs text-slate-300 max-w-sm leading-relaxed font-mono">
-                      Esquiva las nubes tormentosas moviendo el caza F-18 arriba y abajo. ¡Logra <span className="text-yellow-400 font-black">6 PUNTOS</span> para ganar y desbloquear la medalla oficial de Mateo!
+                      Esquiva los mini aviones y cazas que intentan interceptarte moviendo tu F-18 arriba y abajo. ¡Logra <span className="text-yellow-400 font-black">6 PUNTOS</span> para ganar y desbloquear la medalla oficial de Mateo!
                     </p>
                     <button
                       onClick={startGame}
                       className="py-2 px-5 bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold font-mono text-xs rounded-lg transition-transform active:scale-95 shadow-md flex items-center gap-1.5 cursor-pointer"
                     >
                       <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>INICIAR VUELO ENTRENAMIENTO</span>
+                      <span>INICIAR COMBATE ENTRENAMIENTO</span>
                     </button>
                   </div>
                 )}
@@ -1171,19 +1257,37 @@ export default function App() {
                 {gameState === 'playing' && (
                   <div className="relative">
                     {/* Active Flight Stage container */}
-                    <div className="bg-gradient-to-r from-slate-950 to-slate-900 rounded-xl h-[180px] border border-cyan-500/30 relative overflow-hidden select-none">
+                    <div 
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const clickY = e.clientY - rect.top;
+                        const relativeY = clickY / rect.height;
+                        if (relativeY < 0.5) {
+                          movePlayer('up');
+                        } else {
+                          movePlayer('down');
+                        }
+                      }}
+                      className="bg-gradient-to-r from-slate-950 to-slate-900 rounded-xl h-[180px] border border-cyan-500/30 relative overflow-hidden select-none cursor-pointer"
+                    >
                       
                       {/* Grid background passing simulation */}
                       <div className="absolute inset-x-0 top-0 bottom-0 bg-[linear-gradient(rgba(34,211,238,0.02)_1px,transparent_1px)] [background-size:100%_15px] pointer-events-none animate-[scanline_10s_linear_infinite]"></div>
                       
+                      {/* Mobile Pilot Touch Helper Overlays */}
+                      <div className="absolute inset-y-0 left-0 right-0 pointer-events-none flex flex-col justify-between p-2 select-none z-0">
+                        <div className="text-[8px] font-mono text-cyan-500/10 uppercase tracking-widest">▲ TOCA LA PARTE SUPERIOR AQUÍ PARA SUBIR</div>
+                        <div className="text-[8px] font-mono text-cyan-500/10 uppercase tracking-widest text-right">▼ TOCA LA PARTE INFERIOR AQUÍ PARA BAJAR</div>
+                      </div>
+
                       {/* Score Indicator */}
-                      <div className="absolute top-2 right-2 bg-slate-950/80 border border-slate-800 text-cyan-400 py-1 px-2.5 rounded text-xs font-mono font-bold tracking-widest z-10">
+                      <div className="absolute top-2 right-2 bg-slate-950/80 border border-slate-800 text-cyan-400 py-1 px-2.5 rounded text-xs font-mono font-bold tracking-widest z-10 select-none">
                         MARCADOR: {score} / 6
                       </div>
 
                       {/* Player Jet plane SVG */}
                       <div 
-                        className="absolute left-[15%] w-8 h-8 -translate-x-1/2 -translate-y-1/2 transition-all duration-100 flex items-center justify-center text-cyan-400 filter drop-shadow-[0_0_5px_rgba(6,182,212,0.8)]"
+                        className="absolute left-[15%] w-8 h-8 -translate-x-1/2 -translate-y-1/2 transition-all duration-100 flex items-center justify-center text-cyan-400 filter drop-shadow-[0_0_5px_rgba(6,182,212,0.8)] z-10"
                         style={{ top: `${playerY}%` }}
                       >
                         <Plane className="w-7 h-7 transform rotate-90" />
@@ -1195,19 +1299,21 @@ export default function App() {
                       {obstacles.map(obs => (
                         <div
                           key={obs.id}
-                          className="absolute -translate-x-1/2 -translate-y-1/2 transition-all duration-100"
+                          className="absolute -translate-x-1/2 -translate-y-1/2 transition-all duration-100 z-10"
                           style={{
                             left: `${obs.x}%`,
                             top: `${obs.y}%`,
                           }}
                         >
                           {obs.type === 'cloud' ? (
-                            <div className="bg-slate-300 border-2 border-slate-400 rounded-full px-2 py-0.5 text-[10px] text-slate-800 font-bold shadow-md selection:bg-transparent">
-                              ☁ Turbulencia
+                            <div className="bg-red-950/95 border border-red-500/40 rounded-full px-2 py-0.5 text-[9px] text-red-100 font-bold font-mono shadow-[0_0_10px_rgba(239,68,68,0.25)] flex items-center gap-1.5 selection:bg-transparent">
+                              <Plane className="w-3 h-3 text-red-400 rotate-180 transform -scale-y-100 animate-pulse" />
+                              <span>Caza Rojo</span>
                             </div>
                           ) : (
-                            <div className="bg-orange-500/35 text-orange-200 border border-orange-400 text-[8px] font-mono px-1 rounded uppercase">
-                              ⚡ Tormenta
+                            <div className="bg-orange-950/95 border border-orange-500/40 rounded-full px-2 py-0.5 text-[9px] text-orange-100 font-bold font-mono shadow-[0_0_10px_rgba(249,115,22,0.25)] flex items-center gap-1.5 selection:bg-transparent">
+                              <Plane className="w-3 h-3 text-orange-400 rotate-180" />
+                              <span>Avión Gris</span>
                             </div>
                           )}
                         </div>
@@ -1215,21 +1321,27 @@ export default function App() {
                     </div>
 
                     {/* Flight dashboard keyboard instructions & buttons for mobile */}
-                    <div className="flex justify-between items-center mt-3 gap-4">
-                      <span className="text-[10px] font-mono text-slate-400 hidden sm:block">
-                        Teclado: Usa <span className="bg-slate-900 py-0.5 px-1.5 border border-slate-700 rounded text-slate-200 font-bold">W</span> / <span className="bg-slate-900 py-0.5 px-1.5 border border-slate-700 rounded text-slate-200 font-bold">S</span> o Flechas
+                    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mt-3 gap-2">
+                      <span className="text-[10px] font-mono text-slate-400 text-center sm:text-left">
+                        🎮 Toca la pantalla <span className="text-cyan-400 font-bold">arriba / abajo</span> del hangar táctico, usa los controles HUD o teclas <span className="bg-slate-900 px-1 border border-slate-800 rounded font-bold">W / S</span> o Flechas.
                       </span>
                       
                       <div className="flex gap-2 w-full sm:w-auto">
                         <button
-                          onClick={() => movePlayer('up')}
-                          className="flex-1 sm:flex-none py-2.5 px-5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-black rounded-lg text-sm text-center active:bg-cyan-950 active:border-cyan-500/50 select-none cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            movePlayer('up');
+                          }}
+                          className="flex-1 sm:flex-none py-2 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-bold rounded-lg text-xs leading-none text-center active:bg-cyan-950 active:border-cyan-500/50 select-none cursor-pointer"
                         >
                           ▲ SUBIR CAZA
                         </button>
                         <button
-                          onClick={() => movePlayer('down')}
-                          className="flex-1 sm:flex-none py-2.5 px-5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-black rounded-lg text-sm text-center active:bg-cyan-950 active:border-cyan-500/50 select-none cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            movePlayer('down');
+                          }}
+                          className="flex-1 sm:flex-none py-2 px-4 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-bold rounded-lg text-xs leading-none text-center active:bg-cyan-950 active:border-cyan-500/50 select-none cursor-pointer"
                         >
                           ▼ BAJAR CAZA
                         </button>
@@ -1245,7 +1357,7 @@ export default function App() {
                     </div>
                     <div>
                       <h4 className="text-sm font-bold font-mono text-red-400 uppercase">MATEO COMPROMETIDO (FIN DEL JUEGO)</h4>
-                      <p className="text-xs font-mono text-slate-300 mt-1">Esquivaste suficientes nubes pero caíste en turbulencia.</p>
+                      <p className="text-xs font-mono text-slate-300 mt-1">Colisionaste en órbita táctica con un avión rival. ¡Vuelve a intentar!</p>
                       <span className="text-sm font-black font-mono text-cyan-400 mt-1 block">PUNTUACIÓN OBTENIDA: {score}</span>
                       {isNewHighScore && (
                         <span className="text-yellow-400 text-xs font-bold font-mono blink block">★ ¡NUEVO RÉCORD DE TRIPULANTE! ★</span>
@@ -1458,6 +1570,43 @@ export default function App() {
                   return true;
                 });
 
+                // Privacy override: Only display the roster database in-app if verified as Admin
+                if (!isAdmin) {
+                  return (
+                    <div className="bg-slate-950/70 border border-cyan-500/15 rounded-2xl p-5 backdrop-blur-md relative shadow-md">
+                      <div className="flex justify-between items-center mb-4">
+                        <span className="text-xs font-bold font-mono text-cyan-400 uppercase tracking-wider block">
+                          📂 PLAN DE COMBATE: MATEO-06
+                        </span>
+                        <span className="text-[9px] font-mono text-cyan-400 bg-cyan-950/40 border border-cyan-500/30 px-1.5 py-0.5 rounded">F-18 ESCUADRÓN</span>
+                      </div>
+
+                      <div className="space-y-3 font-mono text-xs text-slate-300">
+                        <div className="p-2.5 bg-slate-900/60 rounded-lg border border-slate-800/40">
+                          <span className="text-orange-400 font-bold block text-[10px]">📍 HANGAR DE REUNIÓN</span>
+                          <p className="text-[11px] text-white mt-1">Laurel 8, El manto, Iztapalapa</p>
+                        </div>
+                        
+                        <div className="p-2.5 bg-slate-900/60 rounded-lg border border-slate-800/40">
+                          <span className="text-cyan-400 font-bold block text-[10px]">⏰ HORARIO BRIEFING</span>
+                          <p className="text-[11px] text-white mt-1">Sábado 20 de Junio, 14:00 hrs (CDMX)</p>
+                        </div>
+
+                        <div className="p-2.5 bg-slate-900/60 rounded-lg border border-slate-800/40">
+                          <span className="text-emerald-400 font-bold block text-[10px]">🍗 BANQUETE DE COCKPIT</span>
+                          <p className="text-[11px] text-white mt-1">Guisados espectaculares, botanas de altura y el gran pastel del Capitán.</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-slate-800/40 text-center">
+                        <p className="text-[9px] font-mono text-slate-500">
+                          ⚠️ Roster reservado por seguridad militar de Mateo-06. ¡Confirma tu asistencia arriba!
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+
                 return (
                   <div className="bg-slate-950/70 border border-cyan-500/20 rounded-2xl p-5 backdrop-blur-md relative shadow-md">
                     <div className="flex justify-between items-center mb-3">
@@ -1587,7 +1736,7 @@ export default function App() {
               </p>
             </div>
             
-            <div className="mt-4 flex justify-center gap-2">
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(window.location.href);
@@ -1595,13 +1744,78 @@ export default function App() {
                   if (isAudioEnabled) sfx.playBeep(1200, 0.05);
                   setTimeout(() => setFeedbackMsg(''), 2500);
                 }}
-                className="py-1.5 px-3 bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 text-xs font-mono font-bold rounded-lg flex items-center gap-1 justify-center active:scale-95 transition-all cursor-pointer"
+                className="py-1.5 px-3 bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 text-xs font-mono font-bold rounded-lg flex items-center gap-1.5 justify-center active:scale-95 transition-all cursor-pointer"
               >
                 <Share2 className="w-3.5 h-3.5 text-cyan-400" />
                 <span>Compartir con Pilotos Amigos</span>
               </button>
+
+              <button
+                onClick={() => {
+                  if (isAdmin) {
+                    setIsAdmin(false);
+                    localStorage.removeItem('mateo_captain_admin_v1');
+                    setFeedbackMsg('🔒 Modo Administrador cerrado.');
+                    setTimeout(() => setFeedbackMsg(''), 2500);
+                  } else {
+                    setShowAdminLogin(true);
+                  }
+                }}
+                className="py-1.5 px-2.5 bg-slate-900/60 hover:bg-slate-850 border border-slate-800 text-slate-500 hover:text-slate-300 text-[10px] font-mono rounded-lg flex items-center justify-center cursor-pointer transition-all"
+                title="Consola de Logística"
+              >
+                <span>{isAdmin ? '🔒 Cerrar Admin' : '🔑 Logística'}</span>
+              </button>
             </div>
           </footer>
+
+          {/* Retro/Futuristic Tactical Commander Login Modal */}
+          {showAdminLogin && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+              <form 
+                onSubmit={handleAdminVerify}
+                className="w-full max-w-sm bg-slate-900 border-2 border-cyan-500 rounded-2xl p-6 text-center shadow-[0_0_25px_rgba(6,182,212,0.35)] animate-in fade-in zoom-in-95 duration-200"
+              >
+                <div className="flex justify-center mb-3 text-cyan-400">
+                  <ShieldCheck className="w-12 h-12 animate-pulse" />
+                </div>
+                <h3 className="text-md font-bold font-mono text-cyan-400 uppercase tracking-wider">
+                  Autenticación de Comandante
+                </h3>
+                <p className="text-[11px] font-mono text-slate-400 mt-1">
+                  Ingrese la clave de hangar para habilitar la carga de foto de Mateo y gestionar la lista de tripulantes.
+                </p>
+                
+                <input
+                  type="password"
+                  placeholder="Ej. mateo6"
+                  value={passcode}
+                  onChange={(e) => setPasscode(e.target.value)}
+                  className="w-full mt-4 bg-slate-950 border border-cyan-500/30 rounded-lg p-2.5 text-center font-mono text-sm text-cyan-300 placeholder:text-slate-600 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400"
+                  autoFocus
+                />
+
+                <div className="flex gap-2.5 mt-5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAdminLogin(false);
+                      setPasscode('');
+                    }}
+                    className="flex-1 py-2 bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-400 font-bold font-mono text-xs rounded-lg transition-colors cursor-pointer"
+                  >
+                    CANCELAR
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2 bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 font-black font-mono text-xs rounded-lg transition-all shadow-[0_0_10px_rgba(6,182,212,0.2)] cursor-pointer"
+                  >
+                    CONFIRMAR
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
 
         </div>
       )}

@@ -38,12 +38,30 @@
         "copilots",
         "timestamp"
       ]
+    },
+    "AppConfig": {
+      "title": "AppConfig",
+      "description": "Global settings such as Mateo's captain photo shared across all users.",
+      "type": "object",
+      "properties": {
+        "photo": {
+          "type": "string",
+          "description": "Base64 encoded string representing Mateo's photo."
+        }
+      },
+      "required": [
+        "photo"
+      ]
     }
   },
   "firestore": {
     "crew/{crewId}": {
       "schema": "CrewMember",
       "description": "Collection of all flight crew RSVPs."
+    },
+    "config/{configId}": {
+      "schema": "AppConfig",
+      "description": "Global custom configurations for the invitation."
     }
   }
 }
