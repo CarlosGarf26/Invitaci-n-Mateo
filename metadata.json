@@ -1,0 +1,6 @@
+{
+  "name": "Invitación de Cumpleaños de Mateo",
+  "description": "Invitación interactiva para el cumpleaños número 6 de Mateo con temática de piloto de aviación y aviones de combate.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

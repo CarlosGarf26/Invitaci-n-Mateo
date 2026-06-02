@@ -1,0 +1,49 @@
+{
+  "entities": {
+    "CrewMember": {
+      "title": "CrewMember",
+      "description": "An RSVP attendee representing a pilot registering for Captain Mateo's birthday flights.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Document ID or unique ID for the crew member."
+        },
+        "name": {
+          "type": "string",
+          "description": "Full name of the crew member/pilot."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "declined"
+          ],
+          "description": "Whether the pilot is ready to fly or on reserve."
+        },
+        "copilots": {
+          "type": "number",
+          "description": "Number of additional family members or flight copilots registering under this name."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server or ISO timestamp of the RSVP."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status",
+        "copilots",
+        "timestamp"
+      ]
+    }
+  },
+  "firestore": {
+    "crew/{crewId}": {
+      "schema": "CrewMember",
+      "description": "Collection of all flight crew RSVPs."
+    }
+  }
+}

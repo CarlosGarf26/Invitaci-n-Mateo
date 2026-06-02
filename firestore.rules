@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net catches all unspecified routes
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidCrewMember(data) {
+      return data.keys().hasAll(['id', 'name', 'status', 'copilots', 'timestamp'])
+        && data.keys().size() == 5
+        && data.id is string
+        && data.id.size() <= 128
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 80
+        && data.status is string
+        && (data.status == 'confirmed' || data.status == 'declined')
+        && data.copilots is int
+        && data.copilots >= 0
+        && data.copilots <= 5
+        && data.timestamp is string
+        && data.timestamp.size() <= 50;
+    }
+
+    match /crew/{crewId} {
+      // Anyone can read the flight roster to see the active status
+      allow read, list: if true;
+
+      // Allow creating a new crew registration
+      allow create: if isValidId(crewId)
+        && crewId == incoming().id
+        && !(crewId in ['1', '2', '3'])
+        && isValidCrewMember(incoming());
+
+      // Only allow deleting RSVP crew registrations if not founders
+      allow delete: if !(crewId in ['1', '2', '3']);
+
+      // Only allow updating if same ID schema holds and not a founder
+      allow update: if !(crewId in ['1', '2', '3'])
+        && isValidId(crewId)
+        && isValidCrewMember(incoming())
+        && incoming().id == existing().id;
+    }
+  }
+}
