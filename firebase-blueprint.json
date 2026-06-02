@@ -47,11 +47,13 @@
         "photo": {
           "type": "string",
           "description": "Base64 encoded string representing Mateo's photo."
+        },
+        "photos": {
+          "type": "array",
+          "description": "Array of Base64 encoded strings representing Mateo's multiple slideshow photos."
         }
       },
-      "required": [
-        "photo"
-      ]
+      "required": []
     }
   },
   "firestore": {

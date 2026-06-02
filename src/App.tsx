@@ -75,6 +75,8 @@ export default function App() {
   
   // Custom Captain Photo states
   const [captainPhoto, setCaptainPhoto] = useState<string>('');
+  const [captainPhotos, setCaptainPhotos] = useState<string[]>([]);
+  const [activePhotoIndex, setActivePhotoIndex] = useState<number>(0);
   const [overlayHelmet, setOverlayHelmet] = useState<boolean>(true);
   
   // Launch checklist states
@@ -167,20 +169,33 @@ export default function App() {
     }
   }, []);
 
-  // Load captain config (Mateo's single photo) from Firestore in real-time
+  // Load captain config (Mateo's single/multiple photos) from Firestore in real-time
   useEffect(() => {
     const pathForOnSnapshot = 'config/captain';
     try {
       const unsub = onSnapshot(doc(db, 'config', 'captain'), (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.data();
-          if (data && data.photo) {
-            setCaptainPhoto(data.photo);
+          if (data) {
+            if (data.photo) {
+              setCaptainPhoto(data.photo);
+            } else {
+              setCaptainPhoto('');
+            }
+            if (Array.isArray(data.photos)) {
+              setCaptainPhotos(data.photos);
+            } else if (data.photo) {
+              setCaptainPhotos([data.photo]);
+            } else {
+              setCaptainPhotos([]);
+            }
           } else {
             setCaptainPhoto('');
+            setCaptainPhotos([]);
           }
         } else {
           setCaptainPhoto('');
+          setCaptainPhotos([]);
         }
       }, (error) => {
         console.warn("Could not load captain photo from database. Using default illustration.", error);
@@ -190,6 +205,18 @@ export default function App() {
       console.error("error listening to captain config: ", error);
     }
   }, []);
+
+  // Slideshow interval for multiple captain photos (every 10 seconds)
+  useEffect(() => {
+    if (captainPhotos.length <= 1) {
+      setActivePhotoIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setActivePhotoIndex((prev) => (prev + 1) % captainPhotos.length);
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [captainPhotos.length]);
 
   // Set up local admin status checker
   useEffect(() => {
@@ -270,41 +297,104 @@ export default function App() {
     }
   };
 
-  // Handle custom captain photo upload
+  // Handle custom captain photo upload (can accept multiple files)
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      // Basic compression or check size to ensure it complies with rules and speed (max ~1MB)
-      if (file.size > 1400000) {
-        setFeedbackMsg('⚠️ ERROR: Foto demasiado grande. Suba una menor a 1.2MB.');
-        if (isAudioEnabled) sfx.playBeep(250, 0.35, 'sawtooth');
-        setTimeout(() => setFeedbackMsg(''), 4000);
-        return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    // We can upload up to 10 photos total
+    const currentCount = captainPhotos.length;
+    const incomingCount = files.length;
+    if (currentCount + incomingCount > 10) {
+      setFeedbackMsg(`⚠️ ERROR: Límite de 10 fotos excedido. Ya tienes ${currentCount} cargadas.`);
+      if (isAudioEnabled) sfx.playBeep(250, 0.35, 'sawtooth');
+      setTimeout(() => setFeedbackMsg(''), 4000);
+      return;
+    }
+
+    setIsLoading(true);
+    const loadedBase64s: string[] = [];
+    
+    // Read files helper
+    const readFileAsDataURL = (file: File): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        if (file.size > 1200000) {
+          reject(new Error(`La imagen "${file.name}" es demasiado grande (máximo 1.2MB).`));
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          if (event.target?.result) {
+            resolve(event.target.result as string);
+          } else {
+            reject(new Error('Error al leer el archivo.'));
+          }
+        };
+        reader.onerror = () => reject(new Error('Error de lectura.'));
+        reader.readAsDataURL(file);
+      });
+    };
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const base64 = await readFileAsDataURL(files[i]);
+        loadedBase64s.push(base64);
       }
 
-      setIsLoading(true);
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        if (event.target?.result) {
-          const base64String = event.target.result as string;
-          const pathForWrite = 'config/captain';
-          try {
-            await setDoc(doc(db, 'config', 'captain'), {
-              photo: base64String
-            });
-            setCaptainPhoto(base64String);
-            setFeedbackMsg('📸 ¡Foto de Mateo guardada y sincronizada para todos!');
-            if (isAudioEnabled) sfx.playBeep(1200, 0.08);
-          } catch (error) {
-            handleFirestoreError(error, OperationType.WRITE, pathForWrite);
-          } finally {
-            setIsLoading(false);
-          }
-          setTimeout(() => setFeedbackMsg(''), 3000);
-        }
-      };
-      reader.readAsDataURL(file);
+      const updatedPhotos = [...captainPhotos, ...loadedBase64s].slice(0, 10);
+      const pathForWrite = 'config/captain';
+      
+      await setDoc(doc(db, 'config', 'captain'), {
+        photo: updatedPhotos[0] || "",
+        photos: updatedPhotos
+      });
+
+      setCaptainPhotos(updatedPhotos);
+      setCaptainPhoto(updatedPhotos[0] || "");
+      setActivePhotoIndex(0); // reset slideshow to start
+      
+      setFeedbackMsg(`📸 ¡Sincronizadas ${loadedBase64s.length} fotos exitosamente!`);
+      if (isAudioEnabled) sfx.playBeep(1200, 0.08);
+    } catch (error: any) {
+      if (error?.message) {
+        setFeedbackMsg(`⚠️ ${error.message}`);
+        if (isAudioEnabled) sfx.playBeep(250, 0.35, 'sawtooth');
+      } else {
+        handleFirestoreError(error, OperationType.WRITE, 'config/captain');
+      }
+    } finally {
+      setIsLoading(false);
+      setTimeout(() => setFeedbackMsg(''), 4000);
     }
+  };
+
+  const deletePhotoAtIndex = async (indexToDelete: number) => {
+    setIsLoading(true);
+    const pathForWrite = 'config/captain';
+    const updatedPhotos = captainPhotos.filter((_, i) => i !== indexToDelete);
+    try {
+      if (updatedPhotos.length === 0) {
+        await deleteDoc(doc(db, 'config', 'captain'));
+        setCaptainPhoto('');
+        setCaptainPhotos([]);
+        setFeedbackMsg('🎨 Avatar restaurado a caricatura de cabina.');
+      } else {
+        await setDoc(doc(db, 'config', 'captain'), {
+          photo: updatedPhotos[0],
+          photos: updatedPhotos
+        });
+        setCaptainPhotos(updatedPhotos);
+        setCaptainPhoto(updatedPhotos[0]);
+        setActivePhotoIndex(0);
+        setFeedbackMsg('📸 Foto eliminada de la galería.');
+      }
+      if (isAudioEnabled) sfx.playBeep(600, 0.08);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, pathForWrite);
+    } finally {
+      setIsLoading(false);
+    }
+    setTimeout(() => setFeedbackMsg(''), 3000);
   };
 
   const resetCaptainPhoto = async () => {
@@ -313,6 +403,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'config', 'captain'));
       setCaptainPhoto('');
+      setCaptainPhotos([]);
       setFeedbackMsg('🎨 Avatar restaurado a caricatura de cabina.');
       if (isAudioEnabled) sfx.playBeep(600, 0.08);
     } catch (error) {
@@ -840,18 +931,23 @@ export default function App() {
               <div className="relative">
                 {/* Custom Vector Cartoon Illustration of Captain Mateo or Uploaded Photo */}
                 <div className="w-28 h-28 md:w-32 md:h-32 bg-slate-900 rounded-2xl border-2 border-orange-500 flex items-center justify-center shadow-[0_0_15px_rgba(249,115,22,0.3)] overflow-hidden relative group">
-                  {captainPhoto ? (
+                  {captainPhotos.length > 0 ? (
                     <div className="w-full h-full relative">
-                      <img 
-                        src={captainPhoto} 
-                        alt="Capitán Mateo" 
-                        className="w-full h-full object-cover"
-                        referrerPolicy="no-referrer"
-                      />
+                      {captainPhotos.map((src, i) => (
+                        <img 
+                          key={i}
+                          src={src} 
+                          alt={`Capitán Mateo ${i + 1}`} 
+                          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ${
+                            i === activePhotoIndex ? 'opacity-100 z-0' : 'opacity-0 -z-10'
+                          }`}
+                          referrerPolicy="no-referrer"
+                        />
+                      ))}
                       
                       {/* Interactive Pilot Goggles and Helmet Overlay */}
                       {overlayHelmet && (
-                        <div className="absolute inset-0 pointer-events-none">
+                        <div className="absolute inset-0 pointer-events-none z-10">
                           <svg className="w-full h-full" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
                             {/* Helmet Top/Rim on face */}
                             <path d="M10 28C10 8 90 8 90 28V36H10V28Z" fill="#1b4d3e" fillOpacity="0.85" />
@@ -983,48 +1079,78 @@ export default function App() {
                   </button>
 
                   {isAdmin && (
-                    <>
-                      <button
-                        onClick={() => document.getElementById('captain-photo-input')?.click()}
-                        className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-400 border border-cyan-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
-                        title="Cargar foto real de Mateo"
-                      >
-                        <Camera className="w-3.5 h-3.5" />
-                        <span>{captainPhoto ? 'Cambiar Foto' : 'Cargar Foto de Mateo'}</span>
-                      </button>
-                      <input
-                        type="file"
-                        id="captain-photo-input"
-                        accept="image/*"
-                        onChange={handlePhotoUpload}
-                        className="hidden"
-                      />
+                    <div className="flex flex-col gap-2 w-full sm:w-auto">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => document.getElementById('captain-photo-input')?.click()}
+                          className="bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-400 border border-cyan-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                          title="Cargar varias fotos reales de Mateo para carrusel"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>{captainPhotos.length > 0 ? 'Añadir Fotos (Carrusel)' : 'Cargar Fotos de Mateo'}</span>
+                        </button>
+                        <input
+                          type="file"
+                          id="captain-photo-input"
+                          accept="image/*"
+                          multiple
+                          onChange={handlePhotoUpload}
+                          className="hidden"
+                        />
 
-                      {captainPhoto && (
-                        <>
-                          <button
-                            onClick={toggleHelmet}
-                            className={`border rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer ${
-                              overlayHelmet 
-                                ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.15)]' 
-                                : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
-                            }`}
-                            title="Alternar casco y Google táctico"
-                          >
-                            <span>{overlayHelmet ? 'Quitar Casco' : 'Poner Casco'}</span>
-                          </button>
+                        {captainPhotos.length > 0 && (
+                          <>
+                            <button
+                              onClick={toggleHelmet}
+                              className={`border rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer ${
+                                overlayHelmet 
+                                  ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.15)]' 
+                                  : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                              }`}
+                              title="Alternar casco y visera táctica"
+                            >
+                              <span>{overlayHelmet ? 'Quitar Casco' : 'Poner Casco'}</span>
+                            </button>
 
-                          <button
-                            onClick={resetCaptainPhoto}
-                            className="bg-red-950/40 hover:bg-red-900/50 text-red-400 border border-red-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
-                            title="Volver a caricatura caricaturizada"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Restablecer</span>
-                          </button>
-                        </>
+                            <button
+                              onClick={resetCaptainPhoto}
+                              className="bg-red-950/40 hover:bg-red-900/50 text-red-400 border border-red-500/30 rounded-lg px-2.5 py-1 text-xs font-mono font-bold flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                              title="Eliminar todas las fotos"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Limpiar todo</span>
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Mini gallery for the Admin to preview and selectively delete images */}
+                      {captainPhotos.length > 0 && (
+                        <div className="flex flex-col gap-1 mt-1">
+                          <span className="text-[9px] font-mono text-slate-400 uppercase tracking-widest text-center sm:text-left">
+                            Galería Carrusel (Máx 10 fotos - rota cada 10s):
+                          </span>
+                          <div className="flex flex-wrap justify-center sm:justify-start gap-1.5 bg-slate-950/40 p-1.5 rounded border border-slate-800">
+                            {captainPhotos.map((imgSrc, idx) => (
+                              <div key={idx} className="relative w-9 h-9 rounded border border-slate-700 overflow-hidden group/thumb">
+                                <img src={imgSrc} className="w-full h-full object-cover" />
+                                <button
+                                  type="button"
+                                  onClick={() => deletePhotoAtIndex(idx)}
+                                  className="absolute inset-0 bg-red-600/90 hover:bg-red-600 flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity text-white cursor-pointer"
+                                  title="Eliminar esta foto"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                                <span className="absolute bottom-0 right-0 bg-slate-950/80 text-[7px] text-cyan-400 px-0.5 rounded font-mono leading-none">
+                                  {idx + 1}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       )}
-                    </>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1287,7 +1413,7 @@ export default function App() {
 
                       {/* Player Jet plane SVG */}
                       <div 
-                        className="absolute left-[15%] w-8 h-8 -translate-x-1/2 -translate-y-1/2 transition-all duration-100 flex items-center justify-center text-cyan-400 filter drop-shadow-[0_0_5px_rgba(6,182,212,0.8)] z-10"
+                        className="absolute left-[15%] w-8 h-8 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center text-cyan-400 filter drop-shadow-[0_0_5px_rgba(6,182,212,0.8)] z-10"
                         style={{ top: `${playerY}%` }}
                       >
                         <Plane className="w-7 h-7 transform rotate-90" />
@@ -1299,7 +1425,7 @@ export default function App() {
                       {obstacles.map(obs => (
                         <div
                           key={obs.id}
-                          className="absolute -translate-x-1/2 -translate-y-1/2 transition-all duration-100 z-10"
+                          className="absolute -translate-x-1/2 -translate-y-1/2 z-10"
                           style={{
                             left: `${obs.x}%`,
                             top: `${obs.y}%`,
