@@ -70,7 +70,7 @@ const FOUNDER_CREW: CrewMember[] = [
 export default function App() {
   // Navigation / Flight Sequence States
   const [flightPhase, setFlightPhase] = useState<'preflight' | 'takeoff' | 'active'>('preflight');
-  const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+  const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [isEngineHumming, setIsEngineHumming] = useState(false);
   
   // Custom Captain Photo states
@@ -217,6 +217,26 @@ export default function App() {
     }, 10000);
     return () => clearInterval(interval);
   }, [captainPhotos.length]);
+
+  // Global user interaction listener to auto-unlock Web Audio API constraints on first touch/click
+  useEffect(() => {
+    const unlockAudio = () => {
+      sfx.playBeep(2000, 0.001); // Instant silent beep to unlock AudioContext
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
+
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
 
   // Set up local admin status checker
   useEffect(() => {
