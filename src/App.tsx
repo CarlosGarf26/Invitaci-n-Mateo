@@ -1860,7 +1860,7 @@ export default function App() {
             <div className="flex items-center justify-center space-x-2 mt-2">
               <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse"></span>
               <p className="text-[9px] text-slate-500 font-mono">
-                Desarrollado para Mateo Garfias, Junio 2026
+                Desarrollado para Juan Carlos Garfias, Junio 2026
               </p>
             </div>
             
