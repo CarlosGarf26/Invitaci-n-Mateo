@@ -1432,14 +1432,16 @@ export default function App() {
                           }}
                         >
                           {obs.type === 'cloud' ? (
-                            <div className="bg-red-950/95 border border-red-500/40 rounded-full px-2 py-0.5 text-[9px] text-red-100 font-bold font-mono shadow-[0_0_10px_rgba(239,68,68,0.25)] flex items-center gap-1.5 selection:bg-transparent">
-                              <Plane className="w-3 h-3 text-red-400 rotate-180 transform -scale-y-100 animate-pulse" />
-                              <span>Caza Rojo</span>
+                            <div className="relative text-red-500 filter drop-shadow-[0_0_8px_rgba(239,68,68,0.95)] animate-pulse flex items-center justify-center">
+                              <Plane className="w-6 h-6 transform rotate-270" />
+                              {/* Left-bound opponent rocket exhaust trail pointing right */}
+                              <div className="absolute left-full w-3.5 h-0.5 bg-gradient-to-r from-red-500 to-transparent rounded-full ml-1"></div>
                             </div>
                           ) : (
-                            <div className="bg-orange-950/95 border border-orange-500/40 rounded-full px-2 py-0.5 text-[9px] text-orange-100 font-bold font-mono shadow-[0_0_10px_rgba(249,115,22,0.25)] flex items-center gap-1.5 selection:bg-transparent">
-                              <Plane className="w-3 h-3 text-orange-400 rotate-180" />
-                              <span>Avión Gris</span>
+                            <div className="relative text-orange-400 filter drop-shadow-[0_0_8px_rgba(249,115,22,0.9)] flex items-center justify-center">
+                              <Plane className="w-5 h-5 transform rotate-270" />
+                              {/* Left-bound opponent rocket exhaust trail pointing right */}
+                              <div className="absolute left-full w-3 h-0.5 bg-gradient-to-r from-orange-500 to-transparent rounded-full ml-1"></div>
                             </div>
                           )}
                         </div>
